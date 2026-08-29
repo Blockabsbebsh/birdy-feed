@@ -113,51 +113,81 @@ async function detectSubject(model, source) {
   }
 }
 
-function subjectBox(detection, sourceWidth, sourceHeight) {
+function detectedBox(detection, sourceWidth, sourceHeight) {
   const [x, y, width, height] = detection.prediction.bbox;
   const scaleX = sourceWidth / detection.metadata.width;
   const scaleY = sourceHeight / detection.metadata.height;
-  const padding = 0.4;
-  const left = Math.max(0, (x - width * padding) * scaleX);
-  const top = Math.max(0, (y - height * padding) * scaleY);
-  const right = Math.min(sourceWidth, (x + width * (1 + padding)) * scaleX);
-  const bottom = Math.min(sourceHeight, (y + height * (1 + padding)) * scaleY);
+  const left = Math.max(0, x * scaleX);
+  const top = Math.max(0, y * scaleY);
+  const right = Math.min(sourceWidth, (x + width) * scaleX);
+  const bottom = Math.min(sourceHeight, (y + height) * scaleY);
   return { left, top, width: right - left, height: bottom - top };
 }
 
-function fillBox(subject, sourceWidth, sourceHeight, targetWidth, targetHeight) {
-  const aspect = targetWidth / targetHeight;
-  let width = subject.width;
-  let height = subject.height;
-  if (width / height < aspect) width = height * aspect;
-  else height = width / aspect;
+function cropDimensions(subject, aspect, padding) {
+  const paddedWidth = subject.width * (1 + 2 * padding);
+  const paddedHeight = subject.height * (1 + 2 * padding);
+  const width = Math.max(paddedWidth, paddedHeight * aspect);
+  return { width, height: width / aspect };
+}
 
-  if (width > sourceWidth) {
-    height *= sourceWidth / width;
-    width = sourceWidth;
+function placeAxis(desired, subjectStart, subjectEnd, cropSize, frameSize) {
+  const minimum = Math.max(0, subjectEnd - cropSize);
+  const maximum = Math.min(subjectStart, frameSize - cropSize);
+  if (minimum > maximum + 0.01) return null;
+  return Math.min(Math.max(desired, minimum), maximum);
+}
+
+function cropForSubject(subject, sourceWidth, sourceHeight, aspect) {
+  // Prefer comfortable breathing room. If the source is already tightly
+  // framed, reduce only the optional padding before conceding to letterboxing.
+  let dimensions = cropDimensions(subject, aspect, 0.25);
+  if (dimensions.width > sourceWidth || dimensions.height > sourceHeight) {
+    const tight = cropDimensions(subject, aspect, 0);
+    if (tight.width > sourceWidth + 0.01 || tight.height > sourceHeight + 0.01) {
+      return null;
+    }
+    // Find the most breathing room this particular source can support.
+    let low = 0;
+    let high = 0.25;
+    for (let attempt = 0; attempt < 12; attempt++) {
+      const middle = (low + high) / 2;
+      const candidate = cropDimensions(subject, aspect, middle);
+      if (candidate.width <= sourceWidth && candidate.height <= sourceHeight) low = middle;
+      else high = middle;
+    }
+    dimensions = cropDimensions(subject, aspect, low);
   }
-  if (height > sourceHeight) {
-    width *= sourceHeight / height;
-    height = sourceHeight;
-  }
 
-  let cx = subject.left + subject.width / 2;
-  let cy = subject.top + subject.height / 2 + height * 0.09;
-  cx = Math.min(Math.max(cx, width / 2), sourceWidth - width / 2);
-  cy = Math.min(Math.max(cy, height / 2), sourceHeight - height / 2);
+  const cx = subject.left + subject.width / 2;
+  const cy = subject.top + subject.height / 2;
+  const desiredLeft = cx - dimensions.width / 2;
+  // Put the subject slightly above center to leave room for the title.
+  const desiredTop = cy + dimensions.height * 0.08 - dimensions.height / 2;
+  const left = placeAxis(
+    desiredLeft,
+    subject.left,
+    subject.left + subject.width,
+    dimensions.width,
+    sourceWidth
+  );
+  const top = placeAxis(
+    desiredTop,
+    subject.top,
+    subject.top + subject.height,
+    dimensions.height,
+    sourceHeight
+  );
+  if (left === null || top === null) return null;
+  return { left, top, width: dimensions.width, height: dimensions.height };
+}
 
-  const left = cx - width / 2;
-  const top = cy - height / 2;
-  const insideWidth = Math.max(
-    0,
-    Math.min(subject.left + subject.width, left + width) - Math.max(subject.left, left)
-  );
-  const insideHeight = Math.max(
-    0,
-    Math.min(subject.top + subject.height, top + height) - Math.max(subject.top, top)
-  );
-  const coverage = (insideWidth * insideHeight) / (subject.width * subject.height);
-  return { left, top, width, height, coverage };
+function integerCrop(box, metadata) {
+  const left = Math.max(0, Math.floor(box.left));
+  const top = Math.max(0, Math.floor(box.top));
+  const right = Math.min(metadata.width, Math.ceil(box.left + box.width));
+  const bottom = Math.min(metadata.height, Math.ceil(box.top + box.height));
+  return { left, top, width: right - left, height: bottom - top };
 }
 
 async function attentionCrop(source, size) {
@@ -165,15 +195,6 @@ async function attentionCrop(source, size) {
     .resize(size.width, size.height, { fit: "cover", position: sharp.strategy.attention })
     .jpeg({ quality: JPEG_QUALITY, chromaSubsampling: "4:4:4" })
     .toBuffer();
-}
-
-function shouldPreserveWholeFrame(metadata, size) {
-  const sourceAspect = metadata.width / metadata.height;
-  const targetAspect = size.width / size.height;
-  const retainedShare = sourceAspect < targetAspect
-    ? sourceAspect / targetAspect
-    : targetAspect / sourceAspect;
-  return targetAspect > 1.8 && retainedShare < 0.72;
 }
 
 async function wholeFrameLetterbox(source, size) {
@@ -197,45 +218,18 @@ async function wholeFrameLetterbox(source, size) {
     .toBuffer();
 }
 
-async function detectedImage(source, metadata, subject, size) {
-  const crop = fillBox(subject, metadata.width, metadata.height, size.width, size.height);
-  if (crop.coverage >= 0.93) {
+async function detectedImage(source, metadata, subject, size, cropAspect) {
+  const crop = cropForSubject(subject, metadata.width, metadata.height, cropAspect);
+  if (crop) {
+    const extraction = integerCrop(crop, metadata);
     return sharp(source)
-      .extract({
-        left: Math.max(0, Math.round(crop.left)),
-        top: Math.max(0, Math.round(crop.top)),
-        width: Math.min(metadata.width, Math.max(1, Math.round(crop.width))),
-        height: Math.min(metadata.height, Math.max(1, Math.round(crop.height))),
-      })
+      .extract(extraction)
       .resize(size.width, size.height, { fit: "fill" })
       .jpeg({ quality: JPEG_QUALITY, chromaSubsampling: "4:4:4" })
       .toBuffer();
   }
-
-  const extracted = await sharp(source)
-    .extract({
-      left: Math.max(0, Math.round(subject.left)),
-      top: Math.max(0, Math.round(subject.top)),
-      width: Math.min(metadata.width, Math.max(1, Math.round(subject.width))),
-      height: Math.min(metadata.height, Math.max(1, Math.round(subject.height))),
-    })
-    .resize(size.width, size.height, { fit: "inside", withoutEnlargement: true })
-    .png()
-    .toBuffer();
-  const subjectMeta = await sharp(extracted).metadata();
-  const backdrop = await sharp(source)
-    .resize(size.width, size.height, { fit: "cover", position: sharp.strategy.attention })
-    .blur(20)
-    .modulate({ brightness: 0.55 })
-    .toBuffer();
-  return sharp(backdrop)
-    .composite([{
-      input: extracted,
-      left: Math.round((size.width - subjectMeta.width) / 2),
-      top: Math.round((size.height - subjectMeta.height) / 2),
-    }])
-    .jpeg({ quality: JPEG_QUALITY, chromaSubsampling: "4:4:4" })
-    .toBuffer();
+  console.log(`  ${size.width}x${size.height}: bird cannot fit safely; preserving the full frame`);
+  return wholeFrameLetterbox(source, size);
 }
 
 async function renderBird(model, bird, index) {
@@ -244,21 +238,26 @@ async function renderBird(model, bird, index) {
   const metadata = await sharp(source).metadata();
   const detection = await detectSubject(model, source);
   const subject = detection
-    ? subjectBox(detection, metadata.width, metadata.height)
+    ? detectedBox(detection, metadata.width, metadata.height)
     : null;
+  if (detection) {
+    console.log(
+      `  detected ${detection.prediction.class} at ${(detection.prediction.score * 100).toFixed(1)}%` +
+      ` · box ${Math.round(subject.width)}x${Math.round(subject.height)}`
+    );
+  } else {
+    console.log("  no usable detection; using attention crops");
+  }
   const images = {};
 
   for (const [family, size] of Object.entries(SIZES)) {
     const filename = `bird-${index + 1}-${family}.jpg`;
-    let output;
-    if (shouldPreserveWholeFrame(metadata, size)) {
-      console.log(`  ${family}: preserving the complete ${metadata.width}x${metadata.height} frame`);
-      output = await wholeFrameLetterbox(source, size);
-    } else {
-      output = subject
-        ? await detectedImage(source, metadata, subject, size)
-        : await attentionCrop(source, size);
-    }
+    // Small and large deliberately use identical square crop coordinates.
+    // Medium gets its own wide crop to retain more of the natural photograph.
+    const cropAspect = family === "medium" ? size.width / size.height : 1;
+    const output = subject
+      ? await detectedImage(source, metadata, subject, size, cropAspect)
+      : await attentionCrop(source, size);
     await fs.writeFile(path.join(OUTPUT_DIR, filename), output);
     images[family] = filename;
   }
