@@ -3,8 +3,9 @@
 Backend for the Birdy Scriptable widget. A daily GitHub Actions workflow picks
 five birds, detects and crops the subject with TensorFlow COCO-SSD, and publishes
 the current JSON feed and widget-sized JPEGs to the generated `feed` branch.
-Square and portrait photos are preserved intact in the wide medium output over
-a blurred backdrop when a 2:1 crop would discard too much of the original frame.
+Small and large outputs share the same square crop around the detected bird.
+Medium gets a separate wide crop. A blurred full-frame fallback is used only
+when the detected bird itself cannot fit safely inside the requested aspect ratio.
 
 The generated branch is force-replaced on every successful run, so previous
 photos aren't retained in its Git history.
