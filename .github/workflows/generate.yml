@@ -1,0 +1,51 @@
+name: Generate daily bird feed
+
+on:
+  schedule:
+    - cron: "17 4 * * *"
+  workflow_dispatch:
+
+concurrency:
+  group: birdy-daily
+  cancel-in-progress: true
+
+permissions:
+  contents: write
+
+jobs:
+  generate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Generate feed
+        run: npm run generate
+        env:
+          NUTHATCH_API_KEY: ${{ secrets.NUTHATCH_API_KEY }}
+
+      - name: Publish current feed only
+        shell: bash
+        run: |
+          publish_dir="$(mktemp -d)"
+          cp -R dist/. "$publish_dir/"
+          rm -rf dist
+          git switch --orphan feed-next
+          git rm -rf .
+          cp -R "$publish_dir/." .
+          git add -A
+          git -c user.name="github-actions[bot]" \
+              -c user.email="41898282+github-actions[bot]@users.noreply.github.com" \
+              commit -m "Update bird feed"
+          git push --force origin HEAD:feed
+
