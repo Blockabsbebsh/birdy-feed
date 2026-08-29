@@ -167,6 +167,36 @@ async function attentionCrop(source, size) {
     .toBuffer();
 }
 
+function shouldPreserveWholeFrame(metadata, size) {
+  const sourceAspect = metadata.width / metadata.height;
+  const targetAspect = size.width / size.height;
+  const retainedShare = sourceAspect < targetAspect
+    ? sourceAspect / targetAspect
+    : targetAspect / sourceAspect;
+  return targetAspect > 1.8 && retainedShare < 0.72;
+}
+
+async function wholeFrameLetterbox(source, size) {
+  const foreground = await sharp(source)
+    .resize(size.width, size.height, { fit: "inside", withoutEnlargement: true })
+    .png()
+    .toBuffer();
+  const foregroundMeta = await sharp(foreground).metadata();
+  const backdrop = await sharp(source)
+    .resize(size.width, size.height, { fit: "cover", position: "centre" })
+    .blur(20)
+    .modulate({ brightness: 0.55 })
+    .toBuffer();
+  return sharp(backdrop)
+    .composite([{
+      input: foreground,
+      left: Math.round((size.width - foregroundMeta.width) / 2),
+      top: Math.round((size.height - foregroundMeta.height) / 2),
+    }])
+    .jpeg({ quality: JPEG_QUALITY, chromaSubsampling: "4:4:4" })
+    .toBuffer();
+}
+
 async function detectedImage(source, metadata, subject, size) {
   const crop = fillBox(subject, metadata.width, metadata.height, size.width, size.height);
   if (crop.coverage >= 0.93) {
@@ -220,9 +250,15 @@ async function renderBird(model, bird, index) {
 
   for (const [family, size] of Object.entries(SIZES)) {
     const filename = `bird-${index + 1}-${family}.jpg`;
-    const output = subject
-      ? await detectedImage(source, metadata, subject, size)
-      : await attentionCrop(source, size);
+    let output;
+    if (shouldPreserveWholeFrame(metadata, size)) {
+      console.log(`  ${family}: preserving the complete ${metadata.width}x${metadata.height} frame`);
+      output = await wholeFrameLetterbox(source, size);
+    } else {
+      output = subject
+        ? await detectedImage(source, metadata, subject, size)
+        : await attentionCrop(source, size);
+    }
     await fs.writeFile(path.join(OUTPUT_DIR, filename), output);
     images[family] = filename;
   }
