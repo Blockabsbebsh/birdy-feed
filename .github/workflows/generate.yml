@@ -48,7 +48,7 @@ jobs:
           cp -R dist/. "$publish_dir/"
           rm -rf dist
           git switch --orphan feed-next
-          git rm -rf .
+          find . -mindepth 1 -maxdepth 1 ! -name .git -exec rm -rf {} +
           cp -R "$publish_dir/." .
           git add -A
           git -c user.name="github-actions[bot]" \
