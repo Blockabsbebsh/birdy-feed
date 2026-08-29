@@ -1,6 +1,13 @@
 name: Generate daily bird feed
 
 on:
+  push:
+    branches: [main]
+    paths:
+      - "src/**"
+      - "package.json"
+      - "package-lock.json"
+      - ".github/workflows/generate.yml"
   schedule:
     - cron: "17 4 * * *"
   workflow_dispatch:
