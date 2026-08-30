@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import fs from "node:fs/promises";
 import path from "node:path";
 import * as tf from "@tensorflow/tfjs";
@@ -15,6 +16,7 @@ const SOURCE_WIDTH = 2600;
 const PROBE_WIDTH = 640;
 const JPEG_QUALITY = 88;
 const ROTATION_MINUTES = Math.floor((24 * 60) / BIRD_COUNT);
+const INDEX_HTML = "<!doctype html><html lang=\"en\"><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width,initial-scale=1\"><title>Birdy feed</title><body><h1>Birdy feed</h1><p>Current widget data: <a href=\"./latest.json\">latest.json</a></p></body></html>\n";
 
 const SIZES = {
   small: { width: 310, height: 310 },
@@ -251,13 +253,14 @@ async function renderBird(model, bird, index) {
   const images = {};
 
   for (const [family, size] of Object.entries(SIZES)) {
-    const filename = `bird-${index + 1}-${family}.jpg`;
     // Small and large deliberately use identical square crop coordinates.
     // Medium gets its own wide crop to retain more of the natural photograph.
     const cropAspect = family === "medium" ? size.width / size.height : 1;
     const output = subject
       ? await detectedImage(source, metadata, subject, size, cropAspect)
       : await attentionCrop(source, size);
+    const digest = createHash("sha256").update(output).digest("hex").slice(0, 12);
+    const filename = `bird-${index + 1}-${family}-${digest}.jpg`;
     await fs.writeFile(path.join(OUTPUT_DIR, filename), output);
     images[family] = filename;
   }
@@ -282,5 +285,6 @@ const feed = {
   birds,
 };
 await fs.writeFile(path.join(OUTPUT_DIR, "latest.json"), `${JSON.stringify(feed, null, 2)}\n`);
+await fs.writeFile(path.join(OUTPUT_DIR, "index.html"), INDEX_HTML);
 console.log(`Generated ${birds.length} birds and ${birds.length * Object.keys(SIZES).length} images`);
 
