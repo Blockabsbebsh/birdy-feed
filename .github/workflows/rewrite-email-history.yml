@@ -1,0 +1,60 @@
+name: One-time commit email cleanup
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - .github/workflows/rewrite-email-history.yml
+
+permissions:
+  contents: write
+
+jobs:
+  rewrite:
+    if: github.repository_owner == 'Blockabsbebsh'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          fetch-depth: 0
+
+      - name: Rewrite matching commit metadata
+        env:
+          TARGET_EMAIL_SHA256: 3eb65bc4638e96544abbd040fa1ce1726ac44847f1942979d7c0f9c39b049635
+          REPLACEMENT_EMAIL: 317393049+Blockabsbebsh@users.noreply.github.com
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          git fetch origin '+refs/heads/*:refs/remotes/origin/*' '+refs/tags/*:refs/tags/*'
+          git checkout --detach "$GITHUB_SHA"
+
+          while IFS= read -r remote_ref; do
+            branch="${remote_ref#refs/remotes/origin/}"
+            [ "$branch" = "HEAD" ] && continue
+            git branch -f "$branch" "$remote_ref"
+          done < <(git for-each-ref --format='%(refname)' refs/remotes/origin)
+
+          export FILTER_BRANCH_SQUELCH_WARNING=1
+          export TARGET_EMAIL_SHA256 REPLACEMENT_EMAIL
+          git filter-branch -f --env-filter '
+            author_hash=$(printf %s "$GIT_AUTHOR_EMAIL" | sha256sum | cut -d" " -f1)
+            committer_hash=$(printf %s "$GIT_COMMITTER_EMAIL" | sha256sum | cut -d" " -f1)
+
+            if [ "$author_hash" = "$TARGET_EMAIL_SHA256" ]; then
+              GIT_AUTHOR_EMAIL="$REPLACEMENT_EMAIL"
+            fi
+            if [ "$committer_hash" = "$TARGET_EMAIL_SHA256" ]; then
+              GIT_COMMITTER_EMAIL="$REPLACEMENT_EMAIL"
+            fi
+
+            export GIT_AUTHOR_EMAIL GIT_COMMITTER_EMAIL
+          ' --tag-name-filter cat -- --branches --tags
+
+          while IFS= read -r local_ref; do
+            branch="${local_ref#refs/heads/}"
+            git push --force origin "$branch:$branch"
+          done < <(git for-each-ref --format='%(refname)' refs/heads)
+
+          git push --force --tags origin
