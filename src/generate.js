@@ -9,7 +9,7 @@ const API_KEY = process.env.NUTHATCH_API_KEY;
 if (!API_KEY) throw new Error("NUTHATCH_API_KEY is not configured");
 
 const API_URL = "https://nuthatch.lastelm.software/v2/birds";
-const EBIRD_TAXONOMY_URL = "https://api.ebird.org/v2/ref/taxonomy/ebird?fmt=json&locale=lt";
+const EBIRD_TAXONOMY_URL = locale => `https://api.ebird.org/v2/ref/taxonomy/ebird?fmt=json&locale=${locale}`;
 const OUTPUT_DIR = path.resolve("dist");
 const BIRD_COUNT = 5;
 const PAGE_SIZE = 100;
@@ -79,17 +79,27 @@ async function chooseBirds() {
   return chosen;
 }
 
+async function fetchTaxonomyNames(locale) {
+  const response = await fetchOk(EBIRD_TAXONOMY_URL(locale));
+  const taxonomy = await response.json();
+  return new Map(
+    taxonomy
+      .filter(entry => entry.sciName && entry.comName)
+      .map(entry => [entry.sciName, entry.comName.trim()])
+  );
+}
+
 async function fetchLithuanianNames() {
   try {
-    const response = await fetchOk(EBIRD_TAXONOMY_URL);
-    const taxonomy = await response.json();
+    const [lithuanian, english] = await Promise.all([
+      fetchTaxonomyNames("lt"),
+      fetchTaxonomyNames("en"),
+    ]);
     return new Map(
-      taxonomy
-        .filter(entry => entry.sciName && entry.comName)
-        .map(entry => [entry.sciName, entry.comName.trim()])
+      [...lithuanian].filter(([scientificName, name]) => name !== english.get(scientificName))
     );
   } catch (error) {
-    console.warn(`Could not fetch eBird Lithuanian taxonomy: ${error.message}`);
+    console.warn(`Could not fetch eBird taxonomies: ${error.message}`);
     return new Map();
   }
 }
