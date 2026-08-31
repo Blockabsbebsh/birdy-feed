@@ -3,6 +3,8 @@
 Backend for the Birdy widgets. A daily GitHub Actions workflow picks five
 birds, detects and crops the subject with TensorFlow COCO-SSD, and publishes
 the current JSON feed and widget-sized JPEGs as a GitHub Pages deployment.
+Each bird keeps its English name and includes an optional Lithuanian `nameLt`
+looked up from BirdNET+ Taxonomy using its scientific name.
 
 The generated files are uploaded as a Pages artifact rather than committed to
 a branch, so daily output does not accumulate in Git history. Image filenames
@@ -24,6 +26,10 @@ ratio.
 2. Set the Actions secret `NUTHATCH_API_KEY` to the Nuthatch API key. The
    secret value must never be committed to this repository.
 3. Run **Generate daily bird feed** manually for the first deployment.
+
+BirdNET+ Taxonomy is public and does not require an API key. If a Lithuanian
+lookup fails or has no match, `nameLt` falls back to the English `name`, so feed
+generation and older clients continue to work.
 
 Scheduled generation runs daily at 04:17 UTC. The legacy `feed` branch is no
 longer updated and can be deleted after every client has moved to the Pages URL.
