@@ -4,12 +4,13 @@ import path from "node:path";
 import * as tf from "@tensorflow/tfjs";
 import cocoSsd from "@tensorflow-models/coco-ssd";
 import sharp from "sharp";
+import { chooseLithuanianName, safeWikipediaUrl } from "./metadata.js";
 
 const API_KEY = process.env.NUTHATCH_API_KEY;
 if (!API_KEY) throw new Error("NUTHATCH_API_KEY is not configured");
 
 const API_URL = "https://nuthatch.lastelm.software/v2/birds";
-const EBIRD_TAXONOMY_URL = locale => `https://api.ebird.org/v2/ref/taxonomy/ebird?fmt=json&locale=${locale}`;
+const BIRDNET_API_URL = "https://birdnet.cornell.edu/taxonomy/api/species";
 const OUTPUT_DIR = path.resolve("dist");
 const BIRD_COUNT = 5;
 const PAGE_SIZE = 100;
@@ -114,37 +115,54 @@ async function chooseBirds(now = new Date()) {
   });
 }
 
-async function fetchTaxonomyNames(locale) {
-  const response = await fetchOk(EBIRD_TAXONOMY_URL(locale));
-  const taxonomy = await response.json();
-  return new Map(
-    taxonomy
-      .filter(entry => entry.sciName && entry.comName)
-      .map(entry => [entry.sciName, entry.comName.trim()])
-  );
+async function fetchBirdNetMetadata(scientificName) {
+  const fields = "scientific_name,common_names,wikipedia_urls";
+  const url = `${BIRDNET_API_URL}/${encodeURIComponent(scientificName)}` +
+    `?locale=en,lt,lv&fields=${encodeURIComponent(fields)}`;
+  const response = await fetchOk(url, {
+    headers: { "User-Agent": "Birdy-Feed/1.0" },
+  });
+  return response.json();
 }
 
-async function fetchLithuanianNames() {
+async function workingWikipediaUrl(value) {
+  const candidate = safeWikipediaUrl(value);
+  if (!candidate) return null;
   try {
-    const [lithuanian, english] = await Promise.all([
-      fetchTaxonomyNames("lt"),
-      fetchTaxonomyNames("en"),
-    ]);
-    return new Map(
-      [...lithuanian].filter(([scientificName, name]) => name !== english.get(scientificName))
-    );
+    const response = await fetch(candidate, {
+      method: "HEAD",
+      redirect: "follow",
+      signal: AbortSignal.timeout(15_000),
+      headers: { "User-Agent": "Birdy-Feed/1.0" },
+    });
+    if (!response.ok) return null;
+    return safeWikipediaUrl(response.url) || candidate;
   } catch (error) {
-    console.warn(`Could not fetch eBird taxonomies: ${error.message}`);
-    return new Map();
+    console.warn(`Could not verify Wikipedia URL ${candidate}: ${error.message}`);
+    return null;
   }
 }
 
-function addLithuanianName(bird, lithuanianNames) {
-  const nameLt = lithuanianNames.get(bird.sciName);
-  if (!nameLt) {
-    console.warn(`No Lithuanian name for ${bird.sciName || bird.name}; using ${bird.name}`);
+async function localizeBird(bird) {
+  try {
+    const metadata = await fetchBirdNetMetadata(bird.sciName);
+    const nameLt = chooseLithuanianName(bird.name, metadata.common_names);
+    if (nameLt === bird.name) {
+      console.warn(`No trustworthy Lithuanian name for ${bird.sciName}; using ${bird.name}`);
+    }
+
+    const entries = await Promise.all(
+      ["en", "lt"].map(async language => {
+        const url = await workingWikipediaUrl(metadata.wikipedia_urls?.[language]);
+        return [language, url];
+      }),
+    );
+    const wikipediaUrls = Object.fromEntries(entries.filter(([, url]) => url));
+    return { ...bird, nameLt, wikipediaUrls };
+  } catch (error) {
+    console.warn(`Could not fetch BirdNET metadata for ${bird.sciName}: ${error.message}`);
+    return { ...bird, nameLt: bird.name, wikipediaUrls: {} };
   }
-  return { ...bird, nameLt: nameLt || bird.name };
 }
 
 async function downloadSource(url) {
@@ -334,7 +352,13 @@ async function renderBird(model, bird, index) {
     await fs.writeFile(path.join(OUTPUT_DIR, filename), output);
     images[family] = filename;
   }
-  return { name: bird.name, nameLt: bird.nameLt, sciName: bird.sciName, images };
+  return {
+    name: bird.name,
+    nameLt: bird.nameLt,
+    sciName: bird.sciName,
+    wikipediaUrls: bird.wikipediaUrls,
+    images,
+  };
 }
 
 await fs.rm(OUTPUT_DIR, { recursive: true, force: true });
@@ -343,15 +367,14 @@ await tf.ready();
 console.log(`TensorFlow backend: ${tf.getBackend()}`);
 const model = await cocoSsd.load({ base: "mobilenet_v2" });
 const selected = await chooseBirds();
-const lithuanianNames = await fetchLithuanianNames();
-const localized = selected.map(bird => addLithuanianName(bird, lithuanianNames));
+const localized = await Promise.all(selected.map(localizeBird));
 const birds = [];
 for (let index = 0; index < localized.length; index++) {
   birds.push(await renderBird(model, localized[index], index));
 }
 
 const feed = {
-  version: 1,
+  version: 2,
   generatedAt: new Date().toISOString(),
   rotationMinutes: ROTATION_MINUTES,
   birds,

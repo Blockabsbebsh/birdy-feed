@@ -3,8 +3,10 @@
 Backend for the Birdy widgets. A daily GitHub Actions workflow picks five
 birds, detects and crops the subject with TensorFlow COCO-SSD, and publishes
 the current JSON feed and widget-sized JPEGs as a GitHub Pages deployment.
-Each bird keeps its English name and includes an optional Lithuanian `nameLt`
-looked up from eBird's public Lithuanian taxonomy using its scientific name.
+Each bird keeps its English name and includes a Lithuanian `nameLt` looked up
+from BirdNET+ using its scientific name. Suspect Lithuanian values that duplicate
+or closely resemble BirdNET's Latvian value fall back to English. The feed also
+includes BirdNET's verified English and Lithuanian Wikipedia article URLs.
 
 The generated files are uploaded as a Pages artifact rather than committed to
 a branch, so daily output does not accumulate in Git history. Image filenames
@@ -33,9 +35,10 @@ ratio.
    secret value must never be committed to this repository.
 3. Run **Generate daily bird feed** manually for the first deployment.
 
-The eBird taxonomy endpoint is public and does not require an API key. If a Lithuanian
-lookup fails or has no match, `nameLt` falls back to the English `name`, so feed
-generation and older clients continue to work.
+The BirdNET+ taxonomy endpoint is public and does not require an API key. If a
+metadata lookup fails or its Lithuanian name looks mislabeled, `nameLt` falls
+back to the English `name`. Wikipedia URLs are checked during generation; clients
+prefer the selected language, then English, and finally their legacy search URL.
 
 Scheduled generation runs daily at 04:17 UTC. The legacy `feed` branch is no
 longer updated and can be deleted after every client has moved to the Pages URL.
