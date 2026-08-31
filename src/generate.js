@@ -53,30 +53,65 @@ async function fetchPage(page) {
   return response.json();
 }
 
-async function chooseBirds() {
+function deterministicIndex(value, length) {
+  const digest = createHash("sha256").update(value).digest();
+  return digest.readUInt32BE(0) % length;
+}
+
+async function chooseBirds(now = new Date()) {
   const first = await fetchPage(1);
-  const total = first.total ?? first.totalResults ?? first.count ?? PAGE_SIZE;
-  const pageCount = Math.max(1, Math.ceil(total / PAGE_SIZE));
-  const chosen = [];
-  const seen = new Set();
+  const reportedTotal = Number(first.total ?? first.totalResults ?? first.count);
+  const pageCount = Number.isFinite(reportedTotal)
+    ? Math.max(1, Math.ceil(reportedTotal / PAGE_SIZE))
+    : 1;
+  const remainingPages = await Promise.all(
+    Array.from({ length: pageCount - 1 }, (_, index) => fetchPage(index + 2))
+  );
+  const records = [first, ...remainingPages].flatMap(page => page.entities ?? []);
+  const byScientificName = new Map();
 
-  for (let attempt = 0; chosen.length < BIRD_COUNT && attempt < 30; attempt++) {
-    const page = 1 + Math.floor(Math.random() * pageCount);
-    const data = page === 1 && attempt === 0 ? first : await fetchPage(page);
-    const candidates = (data.entities ?? []).filter(bird => bird.images?.length);
-    if (!candidates.length) continue;
-    const bird = candidates[Math.floor(Math.random() * candidates.length)];
-    const imageUrl = bird.images[Math.floor(Math.random() * bird.images.length)];
-    const key = `${bird.name}|${imageUrl}`;
-    if (seen.has(key)) continue;
-    seen.add(key);
-    chosen.push({ name: bird.name, sciName: bird.sciName || "", imageUrl });
+  for (const bird of records) {
+    const sciName = String(bird.sciName || "").trim();
+    const name = String(bird.name || "").trim();
+    const images = [...new Set(
+      (bird.images ?? []).filter(url => typeof url === "string" && url.length)
+    )];
+    if (!sciName || !name || !images.length) continue;
+
+    const key = sciName.toLocaleLowerCase("en-US");
+    const existing = byScientificName.get(key);
+    if (existing) {
+      existing.images = [...new Set([...existing.images, ...images])];
+    } else {
+      byScientificName.set(key, { name, sciName, images });
+    }
   }
 
-  if (chosen.length !== BIRD_COUNT) {
-    throw new Error(`Could only choose ${chosen.length} unique birds`);
+  const pool = [...byScientificName.values()].sort((a, b) => {
+    const aHash = createHash("sha256").update(a.sciName).digest("hex");
+    const bHash = createHash("sha256").update(b.sciName).digest("hex");
+    return aHash.localeCompare(bHash);
+  });
+  console.log(
+    `Nuthatch image-bearing records: ${Number.isFinite(reportedTotal) ? reportedTotal : "unknown"}`
+  );
+  console.log(`Birdy usable unique species with images: ${pool.length}`);
+
+  if (pool.length < BIRD_COUNT) {
+    throw new Error(`Only ${pool.length} unique image-bearing species are available`);
   }
-  return chosen;
+
+  const utcDay = Math.floor(now.getTime() / 86_400_000);
+  const offset = (utcDay * BIRD_COUNT) % pool.length;
+  return Array.from({ length: BIRD_COUNT }, (_, index) => {
+    const bird = pool[(offset + index) % pool.length];
+    const imageIndex = deterministicIndex(`${utcDay}|${bird.sciName}`, bird.images.length);
+    return {
+      name: bird.name,
+      sciName: bird.sciName,
+      imageUrl: bird.images[imageIndex],
+    };
+  });
 }
 
 async function fetchTaxonomyNames(locale) {
