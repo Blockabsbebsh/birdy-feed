@@ -9,6 +9,7 @@ const API_KEY = process.env.NUTHATCH_API_KEY;
 if (!API_KEY) throw new Error("NUTHATCH_API_KEY is not configured");
 
 const API_URL = "https://nuthatch.lastelm.software/v2/birds";
+const BIRDNET_API_URL = "https://birdnet.cornell.edu/taxonomy/api/species";
 const OUTPUT_DIR = path.resolve("dist");
 const BIRD_COUNT = 5;
 const PAGE_SIZE = 100;
@@ -76,6 +77,26 @@ async function chooseBirds() {
     throw new Error(`Could only choose ${chosen.length} unique birds`);
   }
   return chosen;
+}
+
+async function addLithuanianName(bird) {
+  if (!bird.sciName) {
+    console.warn(`No scientific name for ${bird.name}; using the English name as Lithuanian fallback`);
+    return { ...bird, nameLt: bird.name };
+  }
+
+  const fields = encodeURIComponent("scientific_name,common_names");
+  const url = `${BIRDNET_API_URL}/${encodeURIComponent(bird.sciName)}?locale=lt&fields=${fields}`;
+  try {
+    const response = await fetchOk(url);
+    const data = await response.json();
+    const nameLt = data.common_names?.lt?.trim();
+    if (nameLt) return { ...bird, nameLt };
+    console.warn(`BirdNET has no Lithuanian name for ${bird.sciName}; using ${bird.name}`);
+  } catch (error) {
+    console.warn(`Could not fetch Lithuanian name for ${bird.sciName}: ${error.message}`);
+  }
+  return { ...bird, nameLt: bird.name };
 }
 
 async function downloadSource(url) {
@@ -236,6 +257,7 @@ async function detectedImage(source, metadata, subject, size, cropAspect) {
 
 async function renderBird(model, bird, index) {
   console.log(`[${index + 1}/${BIRD_COUNT}] ${bird.name}`);
+  console.log(`  Lithuanian: ${bird.nameLt}`);
   const source = await downloadSource(bird.imageUrl);
   const metadata = await sharp(source).metadata();
   const detection = await detectSubject(model, source);
@@ -264,7 +286,7 @@ async function renderBird(model, bird, index) {
     await fs.writeFile(path.join(OUTPUT_DIR, filename), output);
     images[family] = filename;
   }
-  return { name: bird.name, sciName: bird.sciName, images };
+  return { name: bird.name, nameLt: bird.nameLt, sciName: bird.sciName, images };
 }
 
 await fs.rm(OUTPUT_DIR, { recursive: true, force: true });
@@ -273,9 +295,10 @@ await tf.ready();
 console.log(`TensorFlow backend: ${tf.getBackend()}`);
 const model = await cocoSsd.load({ base: "mobilenet_v2" });
 const selected = await chooseBirds();
+const localized = await Promise.all(selected.map(addLithuanianName));
 const birds = [];
-for (let index = 0; index < selected.length; index++) {
-  birds.push(await renderBird(model, selected[index], index));
+for (let index = 0; index < localized.length; index++) {
+  birds.push(await renderBird(model, localized[index], index));
 }
 
 const feed = {
