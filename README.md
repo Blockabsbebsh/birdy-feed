@@ -15,6 +15,12 @@ contain a content hash to prevent clients and CDNs from reusing a stale image.
 - Feed: <https://blockabsbebsh.github.io/birdy-feed/latest.json>
 - Site: <https://blockabsbebsh.github.io/birdy-feed/>
 
+The generator loads the complete Nuthatch image-bearing pool, deduplicates it
+by scientific name, and advances through a stable daily rotation. A species is
+not selected again until the rotation has covered the available pool. Each run
+logs Nuthatch's reported image-bearing record count and Birdy's usable unique
+species count.
+
 Small and large outputs share the same square crop around the detected bird.
 Medium gets a separate wide crop. A blurred full-frame fallback is used only
 when the detected bird itself cannot fit safely inside the requested aspect
